@@ -7,3 +7,14 @@ This project is built using **HTML** and **Tailwind CSS** with a clean and moder
 
 ---
 
+Features
+
+- Centralized student resources
+- Modern UI using Tailwind CSS
+- Fully responsive design
+- Resource categories for easy navigation
+- Subscription section (UI only)
+- Technologies Used
+
+- HTML5  
+- Tailwind CSS (CDN)
