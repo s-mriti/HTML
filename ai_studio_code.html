@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gesture & Sound Particle Playground</title>
+    <style>
+        :root {
+            --bg: #0a0a0c;
+            --panel: rgba(20, 20, 25, 0.85);
+            --accent: #00f2ff;
+            --text: #ffffff;
+        }
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: var(--bg);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            color: var(--text);
+        }
+        canvas { display: block; }
+
+        /* UI Overlay */
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 100;
+            background: var(--panel);
+            padding: 20px;
+            border-radius: 12px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            width: 260px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+        }
+        h1 { font-size: 1.2rem; margin: 0 0 15px 0; font-weight: 300; letter-spacing: 1px; color: var(--accent); }
+        .control-group { margin-bottom: 20px; }
+        label { display: block; font-size: 0.8rem; margin-bottom: 8px; opacity: 0.8; }
+        
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 8px;
+        }
+        button {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: white;
+            padding: 8px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            transition: all 0.2s;
+        }
+        button:hover { background: rgba(255, 255, 255, 0.15); border-color: var(--accent); }
+        button.active { background: var(--accent); color: #000; border-color: var(--accent); }
+
+        #colorPicker {
+            width: 100%;
+            height: 35px;
+            border: none;
+            padding: 0;
+            background: transparent;
+            cursor: pointer;
+        }
+
+        #status {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 0.9rem;
+            opacity: 0.6;
+            pointer-events: none;
+        }
+
+        /* Permission Overlay */
+        #overlay {
+            position: fixed;
+            inset: 0;
+            background: var(--bg);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            text-align: center;
+            padding: 20px;
+        }
+        #overlay button {
+            background: var(--accent);
+            color: black;
+            padding: 15px 40px;
+            font-size: 1.1rem;
+            font-weight: bold;
+            border: none;
+            margin-top: 20px;
+        }
+        #error-msg { color: #ff4444; margin-top: 20px; display: none; }
+    </style>
+</head>
+<body>
+
+<div id="overlay">
+    <h1>Particle Playground</h1>
+    <p>This experience requires Camera & Microphone access.</p>
+    <button id="startBtn">START EXPERIENCE</button>
+    <div id="error-msg">Permission denied. Please refresh and allow access to continue.</div>
+</div>
+
+<div id="ui" style="display:none;">
+    <h1>CONTROLS</h1>
+    
+    <div class="control-group">
+        <label>TEMPLATES</label>
+        <div class="grid">
+            <button class="tpl-btn active" onclick="setTemplate('heart')">Heart</button>
+            <button class="tpl-btn" onclick="setTemplate('flower')">Flower</button>
+            <button class="tpl-btn" onclick="setTemplate('saturn')">Saturn</button>
+            <button class="tpl-btn" onclick="setTemplate('buddha')">Zen Statue</button>
+            <button class="tpl-btn" onclick="setTemplate('fireworks')">Fireworks</button>
+            <button class="tpl-btn" onclick="setTemplate('sphere')">Sphere</button>
+        </div>
+    </div>
+
+    <div class="control-group">
+        <label>PARTICLE COLOR</label>
+        <input type="color" id="colorPicker" value="#00f2ff">
+    </div>
+
+    <div style="font-size: 0.7rem; opacity: 0.5;">
+        • Clench hand to shrink<br>
+        • Open hand to expand<br>
+        • Loud sound / beats pulse particles
+    </div>
+</div>
+
+<div id="status">Loading tracking models...</div>
+
+<!-- Load MediaPipe and Three.js via CDN -->
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
+<script>
+/**
+ * APP CONFIG & STATE
+ */
+const PARTICLE_COUNT = 8000;
+let currentTemplate = 'heart';
+let particleColor = new THREE.Color(0x00f2ff);
+let handScale = 1.0;
+let audioIntensity = 0;
+let beatTrigger = 0;
+
+/**
+ * THREE.JS SETUP
+ */
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+camera.position.z = 5;
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(window.devicePixelRatio);
+document.body.appendChild(renderer.domElement);
+
+const geometry = new THREE.BufferGeometry();
+const positions = new Float32Array(PARTICLE_COUNT * 3);
+const originalPositions = new Float32Array(PARTICLE_COUNT * 3);
+const velocities = new Float32Array(PARTICLE_COUNT * 3);
+
+// Initial Positions
+for (let i = 0; i < PARTICLE_COUNT; i++) {
+    positions[i * 3] = (Math.random() - 0.5) * 10;
+    positions[i * 3 + 1] = (Math.random() - 0.5) * 10;
+    positions[i * 3 + 2] = (Math.random() - 0.5) * 10;
+    velocities[i * 3] = (Math.random() - 0.5) * 0.02;
+    velocities[i * 3 + 1] = (Math.random() - 0.5) * 0.02;
+    velocities[i * 3 + 2] = (Math.random() - 0.5) * 0.02;
+}
+
+geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+const material = new THREE.PointsMaterial({
+    size: 0.035,
+    color: particleColor,
+    transparent: true,
+    opacity: 0.8,
+    blending: THREE.AdditiveBlending,
+    sizeAttenuation: true
+});
+
+const particleSystem = new THREE.Points(geometry, material);
+scene.add(particleSystem);
+
+/**
+ * SHAPE TEMPLATES (Mathematical Formulas)
+ */
+function generateShape(type) {
+    const pos = new Float32Array(PARTICLE_COUNT * 3);
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+        let x, y, z;
+        const t = Math.random() * Math.PI * 2;
+        const u = Math.random() * 2 - 1;
+        const phi = Math.random() * Math.PI * 2;
+
+        if (type === 'heart') {
+            // 3D Heart formula
+            const angle = Math.random() * Math.PI * 2;
+            x = 16 * Math.pow(Math.sin(angle), 3);
+            y = 13 * Math.cos(angle) - 5 * Math.cos(2 * angle) - 2 * Math.cos(3 * angle) - Math.cos(4 * angle);
+            z = (Math.random() - 0.5) * 10; 
+            x *= 0.1; y *= 0.1; z *= 0.1;
+        } else if (type === 'flower') {
+            // Rose curve 3D
+            const k = 5;
+            const r = Math.cos(k * t);
+            x = r * Math.cos(t);
+            y = r * Math.sin(t);
+            z = u * 0.5;
+            x *= 2; y *= 2;
+        } else if (type === 'saturn') {
+            if (i < PARTICLE_COUNT * 0.4) {
+                // Sphere
+                const r = 1.2;
+                x = r * Math.sqrt(1 - u * u) * Math.cos(phi);
+                y = r * Math.sqrt(1 - u * u) * Math.sin(phi);
+                z = r * u;
+            } else {
+                // Ring
+                const r = 2.0 + Math.random() * 0.8;
+                x = r * Math.cos(phi);
+                z = r * Math.sin(phi);
+                y = (Math.random() - 0.5) * 0.1;
+            }
+        } else if (type === 'buddha') {
+            // Symbolic Zen Statue (Stacked shapes)
+            if (i < PARTICLE_COUNT * 0.5) { // Base/Legs
+                x = (Math.random() - 0.5) * 2.5;
+                y = -1 + Math.random() * 0.8;
+                z = (Math.random() - 0.5) * 1.5;
+            } else if (i < PARTICLE_COUNT * 0.85) { // Torso
+                x = (Math.random() - 0.5) * (1.2 - Math.abs(y));
+                y = -0.2 + Math.random() * 1.5;
+                z = (Math.random() - 0.5) * 0.8;
+            } else { // Head
+                const r = 0.4;
+                x = r * Math.sqrt(1 - u * u) * Math.cos(phi);
+                y = 1.6 + r * Math.sqrt(1 - u * u) * Math.sin(phi);
+                z = r * u;
+            }
+        } else if (type === 'fireworks') {
+            const r = Math.pow(Math.random(), 0.5) * 3;
+            x = r * Math.sqrt(1 - u * u) * Math.cos(phi);
+            y = r * Math.sqrt(1 - u * u) * Math.sin(phi);
+            z = r * u;
+        } else { // Sphere
+            const r = 2;
+            x = r * Math.sqrt(1 - u * u) * Math.cos(phi);
+            y = r * Math.sqrt(1 - u * u) * Math.sin(phi);
+            z = r * u;
+        }
+
+        pos[i * 3] = x;
+        pos[i * 3 + 1] = y;
+        pos[i * 3 + 2] = z;
+    }
+    return pos;
+}
+
+function setTemplate(name) {
+    currentTemplate = name;
+    const newTarget = generateShape(name);
+    originalPositions.set(newTarget);
+    
+    document.querySelectorAll('.tpl-btn').forEach(b => {
+        b.classList.toggle('active', b.innerText.toLowerCase().includes(name === 'buddha' ? 'zen' : name));
+    });
+}
+
+// Set initial heart
+originalPositions.set(generateShape('heart'));
+
+/**
+ * MEDIA PIPE HAND TRACKING
+ */
+const hands = new Hands({
+    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+});
+
+hands.setOptions({
+    maxNumHands: 2,
+    modelComplexity: 1,
+    minDetectionConfidence: 0.5,
+    minTrackingConfidence: 0.5
+});
+
+hands.onResults((results) => {
+    if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+        document.getElementById('status').innerText = "Hands Detected - Interact Now";
+        
+        let totalOpenness = 0;
+        results.multiHandLandmarks.forEach(landmarks => {
+            // Measure distance from wrist (0) to finger tips (4, 8, 12, 16, 20)
+            const wrist = landmarks[0];
+            const tips = [landmarks[4], landmarks[8], landmarks[12], landmarks[16], landmarks[20]];
+            let openness = 0;
+            tips.forEach(tip => {
+                const dist = Math.sqrt(
+                    Math.pow(tip.x - wrist.x, 2) + 
+                    Math.pow(tip.y - wrist.y, 2)
+                );
+                openness += dist;
+            });
+            totalOpenness += (openness / tips.length);
+        });
+
+        const avgOpenness = totalOpenness / results.multiHandLandmarks.length;
+        // Map openness (roughly 0.1 to 0.5) to scale (0.5 to 3.0)
+        const targetScale = THREE.MathUtils.mapLinear(avgOpenness, 0.15, 0.45, 0.4, 2.8);
+        handScale = THREE.MathUtils.lerp(handScale, targetScale, 0.1);
+    } else {
+        document.getElementById('status').innerText = "No hand detected. Raise your hands!";
+        handScale = THREE.MathUtils.lerp(handScale, 1.0, 0.05);
+    }
+});
+
+/**
+ * AUDIO ANALYSIS
+ */
+let audioContext, analyser, dataArray;
+async function initAudio() {
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const source = audioContext.createMediaStreamSource(stream);
+        analyser = audioContext.createAnalyser();
+        analyser.fftSize = 256;
+        source.connect(analyser);
+        dataArray = new Uint8Array(analyser.frequencyBinCount);
+    } catch (e) {
+        console.error("Audio failed", e);
+    }
+}
+
+function updateAudioData() {
+    if (!analyser) return;
+    analyser.getByteFrequencyData(dataArray);
+    
+    // Volume
+    let sum = 0;
+    for(let i=0; i<dataArray.length; i++) sum += dataArray[i];
+    const avg = sum / dataArray.length;
+    audioIntensity = avg / 128.0; // 0 to 1 range
+
+    // Simple Beat Detection (Bass peak)
+    const bassAvg = dataArray[0] + dataArray[1] + dataArray[2];
+    if (bassAvg > 200) {
+        beatTrigger = 1.0;
+    } else {
+        beatTrigger *= 0.9; // decay
+    }
+}
+
+/**
+ * ANIMATION LOOP
+ */
+function animate() {
+    requestAnimationFrame(animate);
+    updateAudioData();
+
+    const posAttr = geometry.attributes.position;
+    const time = Date.now() * 0.001;
+
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+        const ix = i * 3;
+        const iy = i * 3 + 1;
+        const iz = i * 3 + 2;
+
+        // Current target from template
+        let tx = originalPositions[ix] * handScale;
+        let ty = originalPositions[iy] * handScale;
+        let tz = originalPositions[iz] * handScale;
+
+        // Add Audio Reactivity (Pulsing)
+        const pulse = 1.0 + (audioIntensity * 0.5) + (beatTrigger * 0.3);
+        tx *= pulse; ty *= pulse; tz *= pulse;
+
+        // Subtle floating movement
+        const wave = Math.sin(time + i) * 0.05;
+        tx += wave; ty += wave;
+
+        // Lerp towards target for smoothness
+        posAttr.array[ix] += (tx - posAttr.array[ix]) * 0.1;
+        posAttr.array[iy] += (ty - posAttr.array[iy]) * 0.1;
+        posAttr.array[iz] += (tz - posAttr.array[iz]) * 0.1;
+    }
+
+    posAttr.needsUpdate = true;
+    particleSystem.rotation.y += 0.002;
+    
+    renderer.render(scene, camera);
+}
+
+/**
+ * INITIALIZATION & EVENTS
+ */
+const startBtn = document.getElementById('startBtn');
+const overlay = document.getElementById('overlay');
+const errorMsg = document.getElementById('error-msg');
+
+startBtn.onclick = async () => {
+    try {
+        const video = document.createElement('video');
+        const cameraStream = await navigator.mediaDevices.getUserMedia({ video: true });
+        video.srcObject = cameraStream;
+        video.play();
+
+        const cameraUtils = new Camera(video, {
+            onFrame: async () => {
+                await hands.send({ image: video });
+            },
+            width: 640,
+            height: 480
+        });
+        cameraUtils.start();
+
+        await initAudio();
+        
+        overlay.style.display = 'none';
+        document.getElementById('ui').style.display = 'block';
+        animate();
+    } catch (err) {
+        errorMsg.style.display = 'block';
+        console.error(err);
+    }
+};
+
+document.getElementById('colorPicker').oninput = (e) => {
+    particleColor.set(e.target.value);
+    material.color.copy(particleColor);
+};
+
+window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>
